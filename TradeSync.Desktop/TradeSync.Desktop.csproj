@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,10 +21,18 @@
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.3" />
     <PackageReference Include="System.Data.SQLite" Version="2.0.2" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TradeSync.Core\TradeSync.Core.csproj" />
   </ItemGroup>
+
+	<Target Name="CopyServiceFiles" AfterTargets="Build">
+		<ItemGroup>
+			<ServiceFiles Include="..\TradeSync.Service\bin\$(Configuration)\net8.0\**\*.*" />
+		</ItemGroup>
+		<Copy SourceFiles="@(ServiceFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+	</Target>
 
 </Project>
