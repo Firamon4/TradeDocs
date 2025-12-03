@@ -1,319 +1,141 @@
-﻿using System.Data;
-using System.Text.Json;
-using System.Data.SQLite;
-using TradeSync.Desktop.Logic;
-using TradeSync.Core.Models;
+﻿using TradeSync.Desktop.Views;
 
 namespace TradeSync.Desktop
 {
     public partial class MainForm : Form
     {
-        private const string AuxConnString = "Server=localhost\\SQLEXPRESS;Database=POSTradeDB;Trusted_Connection=True;TrustServerCertificate=True;";
-        private const string LocalDbPath = "local_store.db";
-        private const string StructureFile = "structure.json";
+        private Panel _menuPanel;
+        private Panel _contentPanel;
 
-        private readonly SqliteBuilder _sqliteBuilder;
-        private readonly ServiceAdmin _serviceAdmin; // Додали адміна
-
-        private long _lastLogPosition = 0;
-        private string _currentLogFile = "";
+        // В'юшки
+        private DataView _viewData;
+        private ServiceView _viewService;
+        private StructureView _viewStructure;
+        private SettingsView _viewSettings;
 
         public MainForm()
         {
-            InitializeComponent();
-            _sqliteBuilder = new SqliteBuilder();
-            _serviceAdmin = new ServiceAdmin();
+            this.Text = "TradeSync Admin";
+            this.Size = new Size(1100, 750);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.Font = new Font("Segoe UI", 9F);
+
+            InitializeShell();
+            InitializeViews();
         }
 
-        // 1. У MainForm_Load запускаємо таймер
-        private async void MainForm_Load(object sender, EventArgs e)
+        private void InitializeShell()
         {
-            Log("Запуск програми...");
-            CheckAndInstallServiceAuto();
-            UpdateServiceStatus();
+            _menuPanel = new Panel { Dock = DockStyle.Left, Width = 220, BackColor = Color.FromArgb(32, 34, 37) };
 
-            // Запуск читання логів сервісу
-            timerServiceLog.Start();
+            var lblLogo = new Label { Text = "TradeSync", Dock = DockStyle.Top, Height = 80, ForeColor = Color.White, Font = new Font("Segoe UI", 16, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
 
-            await LoadTableListAsync();
+            var btnData = CreateMenuButton("📊 Дані", () => ShowView(_viewData));
+            var btnService = CreateMenuButton("⚙️ Служба", () => ShowView(_viewService));
+            var btnStruct = CreateMenuButton("📂 Структура", () => ShowView(_viewStructure));
+            var btnSettings = CreateMenuButton("🛠 Налаштування", () => ShowView(_viewSettings));
+
+            _menuPanel.Controls.AddRange(new Control[] { btnSettings, btnStruct, btnService, btnData, lblLogo });
+
+            _contentPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.WhiteSmoke, Padding = new Padding(10) };
+
+            this.Controls.Add(_contentPanel);
+            this.Controls.Add(_menuPanel);
         }
 
-        // 2. Логіка Таймера (читання файлу)
-        private void timerServiceLog_Tick(object sender, EventArgs e)
+        private void InitializeViews()
         {
-            try
+            // Ініціалізація компонентів
+            _viewData = new DataView();
+            _viewService = new ServiceView();
+            _viewStructure = new StructureView();
+            _viewSettings = new SettingsView();
+
+            // Зв'язок: Якщо в налаштуваннях змінили базу -> оновити DataView
+            _viewSettings.OnConfigChanged += () => _viewData.ReloadConfig();
+
+            ShowView(_viewData);
+        }
+
+        private async void ShowView(UserControl newView)
+        {
+            // 1. Перевірка поточної активної вкладки
+            if (_contentPanel.Controls.Count > 0)
             {
-                // Папка логів (там де лежить exe)
-                string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
-
-                if (!Directory.Exists(logDir))
+                var currentView = _contentPanel.Controls[0] as ISaveable;
+                if (currentView != null && currentView.HasUnsavedChanges)
                 {
-                    if (rtbServiceLog.Text != "Папка logs ще не створена.")
-                        rtbServiceLog.Text = "Папка logs ще не створена.";
-                    return;
-                }
+                    var result = MessageBox.Show(
+                        "У вас є незбережені зміни. Зберегти їх перед переходом?",
+                        "Незбережені зміни",
+                        MessageBoxButtons.YesNoCancel,
+                        MessageBoxIcon.Warning);
 
-                // Шукаємо найсвіжіший файл: service-20231025.log
-                var newestFile = new DirectoryInfo(logDir)
-                    .GetFiles("service-*.log")
-                    .OrderByDescending(f => f.LastWriteTime)
-                    .FirstOrDefault();
+                    if (result == DialogResult.Cancel) return; // Скасувати перехід
 
-                if (newestFile == null) return;
-
-                // Якщо файл змінився (настав новий день), скидаємо позицію
-                if (_currentLogFile != newestFile.FullName)
-                {
-                    _currentLogFile = newestFile.FullName;
-                    _lastLogPosition = 0;
-                    rtbServiceLog.Clear();
-                    rtbServiceLog.AppendText($"=== Знайдено новий лог: {newestFile.Name} ===\n");
-                }
-
-                // Читаємо тільки нові дані (Incremental Read)
-                using (var fs = new FileStream(_currentLogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    if (fs.Length > _lastLogPosition)
+                    if (result == DialogResult.Yes)
                     {
-                        fs.Seek(_lastLogPosition, SeekOrigin.Begin);
-                        using (var sr = new StreamReader(fs))
-                        {
-                            string newContent = sr.ReadToEnd();
-
-                            // Додаємо текст
-                            rtbServiceLog.AppendText(newContent);
-
-                            // Автоскрол вниз
-                            rtbServiceLog.SelectionStart = rtbServiceLog.Text.Length;
-                            rtbServiceLog.ScrollToCaret();
-                        }
-                        _lastLogPosition = fs.Position;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // Тихо ігноруємо помилки доступу (може файл заблокований на мілісекунду)
-            }
-        }
-
-        private void CheckAndInstallServiceAuto()
-        {
-            try
-            {
-                string status = _serviceAdmin.GetStatus();
-                if (status == "Not Installed")
-                {
-                    Log("Сервіс не знайдено. Спроба автоматичної реєстрації...");
-                    bool success = InstallServiceSilently();
-                    if (success)
-                    {
-                        Log("Сервіс успішно зареєстровано.");
-                        // Можна одразу і запустити, якщо треба:
-                        // _serviceAdmin.Start(); 
+                        await currentView.SaveAsync(); // Зберегти і піти
                     }
                     else
                     {
-                        Log("ПОМИЛКА: Не вдалося знайти файл TradeSync.Service.exe для авто-встановлення.");
-                        MessageBox.Show("Критична помилка: Файл сервісу відсутній. Перевстановіть програму.", "Помилка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        currentView.DiscardChanges(); // Скасувати зміни і піти
                     }
                 }
             }
-            catch (Exception ex)
+
+            // 2. Стандартний перехід
+            _contentPanel.Controls.Clear();
+            if (newView != null)
             {
-                Log($"Помилка авто-встановлення сервісу: {ex.Message}");
+                newView.Dock = DockStyle.Fill;
+                _contentPanel.Controls.Add(newView);
             }
+
+            // Оновлення заголовка і кольорів меню...
         }
 
-        private bool InstallServiceSilently()
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            string serviceExeName = "TradeSync.Service.exe";
-            string currentDir = AppDomain.CurrentDomain.BaseDirectory;
-
-            // Пріоритет пошуку:
-            // 1. Поточна папка (завдяки кроку 1 у .csproj файлі він має бути тут)
-            // 2. Папки розробки (на випадок, якщо крок 1 не спрацював)
-            string[] pathsToCheck = new[]
+            if (_contentPanel.Controls.Count > 0)
             {
-            Path.Combine(currentDir, serviceExeName),
-            Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\TradeSync.Service\bin\Debug\net8.0", serviceExeName)),
-            Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\TradeSync.Service\bin\Release\net8.0", serviceExeName))
+                var currentView = _contentPanel.Controls[0] as ISaveable;
+                if (currentView != null && currentView.HasUnsavedChanges)
+                {
+                    var result = MessageBox.Show("Незбережені зміни. Зберегти перед виходом?", "Вихід", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+
+                    if (result == DialogResult.Cancel) { e.Cancel = true; return; }
+                    if (result == DialogResult.Yes)
+                    {
+                        // Оскільки OnFormClosing синхронний, запускаємо Save і чекаємо
+                        Task.Run(async () => await currentView.SaveAsync()).Wait();
+                    }
+                }
+            }
+            base.OnFormClosing(e);
+        }
+
+        private Button CreateMenuButton(string text, Action onClick)
+        {
+            var btn = new Button
+            {
+                Text = "  " + text,
+                Dock = DockStyle.Top,
+                Height = 50,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(32, 34, 37),
+                ForeColor = Color.Gainsboro,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(15, 0, 0, 0),
+                Cursor = Cursors.Hand
             };
-
-            string foundPath = pathsToCheck.FirstOrDefault(File.Exists);
-
-            if (foundPath != null)
-            {
-                _serviceAdmin.Install(foundPath);
-                return true;
-            }
-            return false;
-        }
-
-        // Кнопка "Встановити" тепер теж працює на автоматі (якщо користувач натисне вручну)
-        private void btnInstall_Click(object sender, EventArgs e)
-        {
-            if (InstallServiceSilently())
-            {
-                MessageBox.Show("Сервіс встановлено.", "Успіх", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                UpdateServiceStatus();
-            }
-            else
-            {
-                MessageBox.Show("Не вдалося знайти файл TradeSync.Service.exe автоматично.", "Помилка", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        // --- БЛОК КЕРУВАННЯ СЕРВІСОМ ---
-
-        private void UpdateServiceStatus()
-        {
-            string status = _serviceAdmin.GetStatus();
-            lblServiceStatus.Text = $"Статус сервісу: {status}";
-
-            // Проста логіка активації кнопок
-            bool isInstalled = status != "Not Installed";
-            bool isRunning = status == "Running";
-
-            btnInstall.Enabled = !isInstalled;
-            btnUninstall.Enabled = isInstalled;
-
-            btnStart.Enabled = isInstalled && !isRunning;
-            btnStop.Enabled = isRunning;
-
-            // Змінюємо колір для наочності
-            if (isRunning) lblServiceStatus.ForeColor = Color.Green;
-            else if (isInstalled) lblServiceStatus.ForeColor = Color.Orange;
-            else lblServiceStatus.ForeColor = Color.Red;
-        }
-
-        private void btnUninstall_Click(object sender, EventArgs e)
-        {
-            if (MessageBox.Show("Видалити службу?", "Підтвердження", MessageBoxButtons.YesNo) == DialogResult.Yes)
-            {
-                try
-                {
-                    _serviceAdmin.Uninstall();
-                    UpdateServiceStatus();
-                }
-                catch (Exception ex) { MessageBox.Show("Помилка: " + ex.Message); }
-            }
-        }
-
-        private void btnStart_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Cursor = Cursors.WaitCursor;
-                _serviceAdmin.Start();
-                UpdateServiceStatus();
-            }
-            catch (Exception ex) { MessageBox.Show("Помилка запуску: " + ex.Message); }
-            finally { Cursor = Cursors.Default; }
-        }
-
-        private void btnStop_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Cursor = Cursors.WaitCursor;
-                _serviceAdmin.Stop();
-                UpdateServiceStatus();
-            }
-            catch (Exception ex) { MessageBox.Show("Помилка зупинки: " + ex.Message); }
-            finally { Cursor = Cursors.Default; }
-        }
-
-        // --- БЛОК СИНХРОНІЗАЦІЇ (Залишається як був) ---
-
-        private async Task LoadTableListAsync()
-        {
-            if (!File.Exists(StructureFile))
-            {
-                Log("УВАГА: structure.json не знайдено. Скопіюйте його в папку з програмою.");
-                return;
-            }
-            try
-            {
-                var json = await File.ReadAllTextAsync(StructureFile);
-                var tables = JsonSerializer.Deserialize<List<TableSchema>>(json);
-                cmbTables.Items.Clear();
-                if (tables != null)
-                    foreach (var table in tables) cmbTables.Items.Add(table.Name1C);
-            }
-            catch (Exception ex) { Log("Помилка JSON: " + ex.Message); }
-        }
-
-        private async void btnSync_Click(object sender, EventArgs e)
-        {
-            btnSync.Enabled = false;
-            progressBar1.Value = 0;
-            Log("=== Початок синхронізації ===");
-
-            try
-            {
-                var syncManager = new SyncManager(AuxConnString, LocalDbPath, StructureFile);
-
-                syncManager.OnLog += (msg) => Invoke(() => Log(msg));
-                syncManager.OnProgress += (curr, total) => Invoke(() =>
-                {
-                    progressBar1.Maximum = total;
-                    progressBar1.Value = curr;
-                    lblStatus.Text = $"Обробка: {curr}/{total}";
-                });
-
-                await Task.Run(() => syncManager.RunSyncAsync());
-
-                Log("=== Завершено ===");
-                lblStatus.Text = "Готово";
-
-                if (cmbTables.SelectedItem != null)
-                    LoadPreviewData(cmbTables.SelectedItem.ToString());
-            }
-            catch (Exception ex)
-            {
-                Log($"ПОМИЛКА: {ex.Message}");
-            }
-            finally
-            {
-                btnSync.Enabled = true;
-            }
-        }
-
-        private void cmbTables_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (cmbTables.SelectedItem != null)
-                LoadPreviewData(cmbTables.SelectedItem.ToString());
-        }
-
-        private void LoadPreviewData(string onEcName)
-        {
-            string tableName = _sqliteBuilder.GetLocalTableName(onEcName);
-            Log($"Читання таблиці: {tableName}");
-
-            try
-            {
-                string connStr = $"Data Source={LocalDbPath};Version=3;";
-                if (!File.Exists(LocalDbPath)) return;
-
-                using (var conn = new SQLiteConnection(connStr))
-                {
-                    conn.Open();
-                    var cmd = new SQLiteCommand($"SELECT * FROM [{tableName}] LIMIT 100", conn);
-                    var da = new SQLiteDataAdapter(cmd);
-                    var dt = new DataTable();
-                    da.Fill(dt);
-                    dataGridView1.DataSource = dt;
-                }
-            }
-            catch (Exception ex) { Log("Не вдалося показати дані: " + ex.Message); }
-        }
-
-        private void Log(string message)
-        {
-            string time = DateTime.Now.ToString("HH:mm:ss");
-            rtbLog.AppendText($"[{time}] {message}{Environment.NewLine}");
-            rtbLog.ScrollToCaret();
+            btn.FlatAppearance.BorderSize = 0;
+            btn.Click += (s, e) => {
+                foreach (Control c in _menuPanel.Controls) if (c is Button b) b.BackColor = Color.FromArgb(32, 34, 37);
+                ((Button)s).BackColor = Color.FromArgb(45, 47, 50);
+                onClick();
+            };
+            return btn;
         }
     }
 }
