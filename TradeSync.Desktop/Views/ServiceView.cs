@@ -1,4 +1,5 @@
-﻿using TradeSync.Desktop.Logic;
+﻿using System.Diagnostics;
+using TradeSync.Desktop.Logic;
 using Timer = System.Windows.Forms.Timer;
 
 namespace TradeSync.Desktop.Views
@@ -6,117 +7,253 @@ namespace TradeSync.Desktop.Views
     public class ServiceView : UserControl
     {
         private readonly ServiceAdmin _admin = new ServiceAdmin();
-        private RichTextBox _rtbLiveLog;
-        private Label _lblStatus;
-        private Button _btnStart, _btnStop, _btnInstall, _btnUninstall; // Додано Unistall
 
-        private Timer _logTimer;
+        // UI Елементи
+        private Label _lblStatus;
+        private Button _btnStart, _btnStop, _btnInstall, _btnUninstall;
+        private RichTextBox _rtbLog;
+
+        // Фільтри логів
+        private ComboBox _cmbLogType; // <--- НОВЕ: Вибір типу (Info/Error)
+        private ComboBox _cmbLogFiles; // Вибір конкретного файлу
+        private CheckBox _chkAutoScroll;
+
+        private Timer _monitorTimer;
+        private string _currentLogPath = "";
         private long _lastLogPos = 0;
-        private string _currentLogFile = "";
 
         public ServiceView()
         {
-            this.BackColor = Color.White;
+            this.Dock = DockStyle.Fill;
+            this.BackColor = Color.FromArgb(240, 240, 240);
+
             InitializeLayout();
 
-            _logTimer = new Timer { Interval = 2000 };
-            _logTimer.Tick += (s, e) => { UpdateLog(); UpdateStatus(); };
-            _logTimer.Start();
+            _monitorTimer = new Timer { Interval = 1000 };
+            _monitorTimer.Tick += (s, e) => { UpdateStatus(); ReadLiveLog(); };
+            _monitorTimer.Start();
+
             UpdateStatus();
+
+            // Ініціалізація вибору типів логів
+            _cmbLogType.SelectedIndex = 0; // За замовчуванням "Загальний"
         }
 
         private void InitializeLayout()
         {
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Padding = new Padding(20) };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F)); // Header
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F)); // Buttons
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // Log
+            var mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Padding = new Padding(10) };
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60F)); // Header
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45F)); // Toolbar (збільшив висоту)
+            mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // Log
 
-            _lblStatus = new Label { Text = "Status: Checking...", Font = new Font("Segoe UI", 16, FontStyle.Bold), AutoSize = true };
+            // === 1. HEADER ===
+            var headerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(20, 10, 20, 10) };
 
-            var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill };
+            _lblStatus = new Label { Text = "Статус: ...", Dock = DockStyle.Left, AutoSize = true, Font = new Font("Segoe UI", 16, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
 
-            _btnStart = CreateBtn("▶ START", Color.MediumSeaGreen, () => SafeExec(_admin.Start));
-            _btnStop = CreateBtn("⏹ STOP", Color.IndianRed, () => SafeExec(_admin.Stop));
-            _btnInstall = CreateBtn("📥 INSTALL", Color.Gray, () => InstallAuto());
-            _btnUninstall = CreateBtn("🗑 UNINSTALL", Color.Gray, () => SafeExec(_admin.Uninstall)); // Додано
+            var btnFlow = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
 
-            btnPanel.Controls.AddRange(new Control[] { _btnStart, _btnStop, _btnInstall, _btnUninstall });
+            _btnUninstall = CreateSecondaryButton("🗑 Видалити");
+            _btnUninstall.Click += (s, e) => SafeExec(_admin.Uninstall);
 
-            var grpLog = new GroupBox { Text = "Service Live Log (logs/*.log)", Dock = DockStyle.Fill };
-            _rtbLiveLog = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.Black, ForeColor = Color.Lime, Font = new Font("Consolas", 10), ReadOnly = true };
-            grpLog.Controls.Add(_rtbLiveLog);
+            _btnInstall = CreateSecondaryButton("📥 Встановити");
+            _btnInstall.Click += (s, e) => SafeExec(() => InstallAuto());
 
-            layout.Controls.Add(_lblStatus, 0, 0);
-            layout.Controls.Add(btnPanel, 0, 1);
-            layout.Controls.Add(grpLog, 0, 2);
-            this.Controls.Add(layout);
+            _btnStop = CreateMainButton("⏹ СТОП", Color.IndianRed);
+            _btnStop.Click += (s, e) => SafeExec(_admin.Stop);
+
+            _btnStart = CreateMainButton("▶ СТАРТ", Color.SeaGreen);
+            _btnStart.Click += (s, e) => SafeExec(_admin.Start);
+
+            btnFlow.Controls.Add(_btnStart);
+            btnFlow.Controls.Add(_btnStop);
+            btnFlow.Controls.Add(CreateSpacer(20));
+            btnFlow.Controls.Add(_btnInstall);
+            btnFlow.Controls.Add(_btnUninstall);
+
+            headerPanel.Controls.Add(btnFlow);
+            headerPanel.Controls.Add(_lblStatus);
+
+            // === 2. TOOLBAR (Фільтри логів) ===
+            var toolPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 0) };
+
+            // Тип логу (Info vs Error)
+            var lblType = new Label { Text = "Тип:", Dock = DockStyle.Left, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 10), Padding = new Padding(0, 5, 0, 0) };
+            _cmbLogType = new ComboBox { Dock = DockStyle.Left, Width = 160, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10), FlatStyle = FlatStyle.Flat };
+            _cmbLogType.Items.AddRange(new string[] { "📘 Загальний (Info)", "📕 Помилки (Errors)" });
+            _cmbLogType.SelectedIndexChanged += (s, e) => RefreshLogFilesList(); // При зміні типу оновлюємо список файлів
+
+            // Файл логу
+            var lblFile = new Label { Text = "Файл:", Dock = DockStyle.Left, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 10), Padding = new Padding(10, 5, 0, 0) };
+            _cmbLogFiles = new ComboBox { Dock = DockStyle.Left, Width = 220, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 10), FlatStyle = FlatStyle.Flat };
+            _cmbLogFiles.SelectedIndexChanged += (s, e) => ChangeLogFile();
+
+            // Кнопки
+            var btnFolder = new Button { Text = "📂 Папка", Dock = DockStyle.Left, Width = 80, FlatStyle = FlatStyle.Flat, BackColor = Color.White, Cursor = Cursors.Hand, Margin = new Padding(10, 0, 0, 0) };
+            btnFolder.Click += (s, e) => OpenLogFolder();
+
+            var btnOpen = new Button { Text = "📄 Відкрити", Dock = DockStyle.Left, Width = 80, FlatStyle = FlatStyle.Flat, BackColor = Color.White, Cursor = Cursors.Hand };
+            btnOpen.Click += (s, e) => OpenCurrentLogFile();
+
+            _chkAutoScroll = new CheckBox { Text = "Авто-прокрутка", Dock = DockStyle.Right, Checked = true, Font = new Font("Segoe UI", 10), AutoSize = true, Padding = new Padding(0, 5, 0, 0) };
+
+            // Додаємо зліва направо (порядок важливий для Dock=Left)
+            toolPanel.Controls.Add(_chkAutoScroll); // Right dock
+
+            toolPanel.Controls.Add(btnOpen);
+            toolPanel.Controls.Add(btnFolder);
+            toolPanel.Controls.Add(CreateSpacer(10));
+            toolPanel.Controls.Add(_cmbLogFiles);
+            toolPanel.Controls.Add(lblFile);
+            toolPanel.Controls.Add(_cmbLogType);
+            toolPanel.Controls.Add(lblType);
+
+            // === 3. LOG VIEWER ===
+            var logContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
+            _rtbLog = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.LightGreen,
+                Font = new Font("Consolas", 10),
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None
+            };
+            logContainer.Controls.Add(_rtbLog);
+
+            mainLayout.Controls.Add(headerPanel, 0, 0);
+            mainLayout.Controls.Add(toolPanel, 0, 1);
+            mainLayout.Controls.Add(logContainer, 0, 2);
+
+            this.Controls.Add(mainLayout);
         }
 
-        private void UpdateLog()
+        // --- ЛОГІКА ЛОГІВ ---
+
+        private void RefreshLogFilesList()
         {
+            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs");
+            if (!Directory.Exists(dir)) return;
+
+            // Визначаємо патерн пошуку залежно від вибраного типу
+            string searchPattern = _cmbLogType.SelectedIndex == 0 ? "service-*.log" : "errors-*.log";
+
+            // Змінюємо колір тексту залежно від типу, щоб було наглядно
+            if (_cmbLogType.SelectedIndex == 0)
+                _rtbLog.ForeColor = Color.LightGreen;
+            else
+                _rtbLog.ForeColor = Color.OrangeRed;
+
+            var files = new DirectoryInfo(dir).GetFiles(searchPattern)
+                .OrderByDescending(f => f.LastWriteTime)
+                .ToArray();
+
+            _cmbLogFiles.Items.Clear();
+            _cmbLogFiles.ResetText();
+
+            if (files.Length == 0)
+            {
+                _cmbLogFiles.Items.Add("(файлів немає)");
+                _cmbLogFiles.SelectedIndex = 0;
+                _rtbLog.Clear();
+                _currentLogPath = "";
+                return;
+            }
+
+            foreach (var f in files)
+            {
+                _cmbLogFiles.Items.Add(f.Name);
+            }
+
+            // Вибираємо найсвіжіший
+            _cmbLogFiles.SelectedIndex = 0;
+        }
+
+        private void ChangeLogFile()
+        {
+            if (_cmbLogFiles.SelectedItem == null || _cmbLogFiles.SelectedItem.ToString() == "(файлів немає)") return;
+
+            string fileName = _cmbLogFiles.SelectedItem.ToString();
+            string fullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", fileName);
+
+            if (_currentLogPath != fullPath)
+            {
+                _currentLogPath = fullPath;
+                _lastLogPos = 0;
+                _rtbLog.Clear();
+                _rtbLog.AppendText($"--- Завантаження: {fileName} ---\n");
+                ReadLiveLog(); // Примусово читаємо відразу
+            }
+        }
+
+        private void ReadLiveLog()
+        {
+            if (string.IsNullOrEmpty(_currentLogPath) || !File.Exists(_currentLogPath)) return;
+
             try
             {
-                // Точний шлях до папки з exe
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string logDir = Path.Combine(baseDir, "logs");
-
-                if (!Directory.Exists(logDir)) return;
-
-                var f = new DirectoryInfo(logDir).GetFiles("service-*.log")
-                    .OrderByDescending(x => x.LastWriteTime).FirstOrDefault();
-
-                if (f == null) return;
-
-                if (_currentLogFile != f.FullName)
+                using (var fs = new FileStream(_currentLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
-                    _currentLogFile = f.FullName;
-                    _lastLogPos = 0;
-                    _rtbLiveLog.Clear();
-                    _rtbLiveLog.AppendText($"--- Log file: {f.Name} ---\n");
-                }
+                    // Якщо файл був перезаписаний (новий запуск), скидаємо позицію
+                    if (fs.Length < _lastLogPos) _lastLogPos = 0;
 
-                using var fs = new FileStream(_currentLogFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                if (fs.Length > _lastLogPos)
-                {
-                    fs.Seek(_lastLogPos, SeekOrigin.Begin);
-                    using var sr = new StreamReader(fs);
-                    _rtbLiveLog.AppendText(sr.ReadToEnd());
-                    _rtbLiveLog.ScrollToCaret();
-                    _lastLogPos = fs.Position;
+                    if (fs.Length > _lastLogPos)
+                    {
+                        fs.Seek(_lastLogPos, SeekOrigin.Begin);
+                        using (var sr = new StreamReader(fs))
+                        {
+                            string newText = sr.ReadToEnd();
+                            _rtbLog.AppendText(newText);
+
+                            if (_chkAutoScroll.Checked)
+                            {
+                                _rtbLog.SelectionStart = _rtbLog.Text.Length;
+                                _rtbLog.ScrollToCaret();
+                            }
+                        }
+                        _lastLogPos = fs.Position;
+                    }
                 }
             }
-            catch { }
+            catch { /* ігноруємо конфлікти читання */ }
         }
 
+        private void OpenLogFolder() { string d = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"); if (Directory.Exists(d)) Process.Start("explorer.exe", d); }
+        private void OpenCurrentLogFile() { if (File.Exists(_currentLogPath)) new Process { StartInfo = new ProcessStartInfo(_currentLogPath) { UseShellExecute = true } }.Start(); }
+
+        // --- ЛОГІКА СТАТУСУ --- (Без змін, тільки копіюємо для повноти)
         private void UpdateStatus()
         {
             string s = _admin.GetStatus();
-            _lblStatus.Text = $"SERVICE STATUS: {s.ToUpper()}";
-            _lblStatus.ForeColor = s == "Running" ? Color.Green : (s == "Stopped" ? Color.Red : Color.Gray);
-
-            bool installed = s != "Not Installed";
-            _btnStart.Enabled = installed && s != "Running";
-            _btnStop.Enabled = s == "Running";
-            _btnInstall.Enabled = !installed;
-            _btnUninstall.Enabled = installed;
+            if (s == "Running")
+            {
+                _lblStatus.Text = "Статус: ПРАЦЮЄ"; _lblStatus.ForeColor = Color.SeaGreen;
+                _btnStart.Visible = false; _btnStop.Visible = true; _btnInstall.Visible = false; _btnUninstall.Visible = false;
+            }
+            else if (s == "Stopped")
+            {
+                _lblStatus.Text = "Статус: ЗУПИНЕНО"; _lblStatus.ForeColor = Color.IndianRed;
+                _btnStart.Visible = true; _btnStop.Visible = false; _btnInstall.Visible = false; _btnUninstall.Visible = true;
+            }
+            else
+            {
+                _lblStatus.Text = "Статус: НЕ ВСТАНОВЛЕНО"; _lblStatus.ForeColor = Color.Gray;
+                _btnStart.Visible = false; _btnStop.Visible = false; _btnInstall.Visible = true; _btnUninstall.Visible = false;
+            }
         }
 
-        private void InstallAuto()
+        // --- HELPERS ---
+        private void InstallAuto() { string p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TradeSync.Service.exe"); if (File.Exists(p)) SafeExec(() => _admin.Install(p)); else MessageBox.Show("Файл exe не знайдено"); }
+        private void SafeExec(Action a) { try { a(); UpdateStatus(); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
+        private Panel CreateSpacer(int w) => new Panel { Dock = DockStyle.Left, Width = w };
+
+        private Button CreateMainButton(string t, Color bg)
         {
-            string exe = "TradeSync.Service.exe";
-            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, exe);
-            if (File.Exists(path)) SafeExec(() => _admin.Install(path));
-            else MessageBox.Show($"File not found: {path}");
+            return new Button { Text = t, BackColor = bg, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Size = new Size(130, 40), Cursor = Cursors.Hand, Margin = new Padding(5, 0, 0, 0), Font = new Font("Segoe UI", 10, FontStyle.Bold) };
         }
-
-        private void SafeExec(Action act) { try { act(); UpdateStatus(); } catch (Exception ex) { MessageBox.Show(ex.Message); } }
-
-        private Button CreateBtn(string t, Color c, Action act)
+        private Button CreateSecondaryButton(string t)
         {
-            var b = new Button { Text = t, BackColor = c, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Width = 110, Height = 40, Cursor = Cursors.Hand, Margin = new Padding(0, 0, 10, 0) };
-            b.Click += (s, e) => act();
-            return b;
+            return new Button { Text = t, BackColor = Color.Transparent, ForeColor = Color.DimGray, FlatStyle = FlatStyle.Flat, Size = new Size(130, 40), Cursor = Cursors.Hand, Margin = new Padding(5, 0, 0, 0), Font = new Font("Segoe UI", 9) };
         }
     }
 }

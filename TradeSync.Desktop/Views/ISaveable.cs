@@ -4,6 +4,6 @@
     {
         bool HasUnsavedChanges { get; }
         Task SaveAsync();
-        void DiscardChanges(); // Скасувати зміни (перезавантажити)
+        void DiscardChanges(); // Скасувати зміни
     }
 }

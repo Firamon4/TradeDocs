@@ -1,4 +1,5 @@
-﻿using TradeSync.Desktop.Views;
+﻿using TradeSync.Core.Logic; 
+using TradeSync.Desktop.Views;
 
 namespace TradeSync.Desktop
 {
@@ -31,7 +32,7 @@ namespace TradeSync.Desktop
             var lblLogo = new Label { Text = "TradeSync", Dock = DockStyle.Top, Height = 80, ForeColor = Color.White, Font = new Font("Segoe UI", 16, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
 
             var btnData = CreateMenuButton("📊 Дані", () => ShowView(_viewData));
-            var btnService = CreateMenuButton("⚙️ Служба", () => ShowView(_viewService));
+            var btnService = CreateMenuButton("⚙️ Сервіс", () => ShowView(_viewService));
             var btnStruct = CreateMenuButton("📂 Структура", () => ShowView(_viewStructure));
             var btnSettings = CreateMenuButton("🛠 Налаштування", () => ShowView(_viewSettings));
 
@@ -59,56 +60,41 @@ namespace TradeSync.Desktop
 
         private async void ShowView(UserControl newView)
         {
-            // 1. Перевірка поточної активної вкладки
+            // 1. ПЕРЕВІРКА НА ЗБЕРЕЖЕННЯ
             if (_contentPanel.Controls.Count > 0)
             {
-                var currentView = _contentPanel.Controls[0] as ISaveable;
-                if (currentView != null && currentView.HasUnsavedChanges)
+                var current = _contentPanel.Controls[0] as ISaveable;
+                if (current != null && current.HasUnsavedChanges)
                 {
-                    var result = MessageBox.Show(
-                        "У вас є незбережені зміни. Зберегти їх перед переходом?",
-                        "Незбережені зміни",
-                        MessageBoxButtons.YesNoCancel,
-                        MessageBoxIcon.Warning);
-
-                    if (result == DialogResult.Cancel) return; // Скасувати перехід
-
-                    if (result == DialogResult.Yes)
-                    {
-                        await currentView.SaveAsync(); // Зберегти і піти
-                    }
-                    else
-                    {
-                        currentView.DiscardChanges(); // Скасувати зміни і піти
-                    }
+                    var res = MessageBox.Show("Є незбережені зміни. Зберегти перед переходом?", "Увага", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                    if (res == DialogResult.Cancel) return;
+                    if (res == DialogResult.Yes) await current.SaveAsync();
+                    else current.DiscardChanges();
                 }
             }
 
-            // 2. Стандартний перехід
+            // 2. Переключення
             _contentPanel.Controls.Clear();
             if (newView != null)
             {
                 newView.Dock = DockStyle.Fill;
                 _contentPanel.Controls.Add(newView);
             }
-
-            // Оновлення заголовка і кольорів меню...
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (_contentPanel.Controls.Count > 0)
             {
-                var currentView = _contentPanel.Controls[0] as ISaveable;
-                if (currentView != null && currentView.HasUnsavedChanges)
+                var current = _contentPanel.Controls[0] as ISaveable;
+                if (current != null && current.HasUnsavedChanges)
                 {
-                    var result = MessageBox.Show("Незбережені зміни. Зберегти перед виходом?", "Вихід", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-
-                    if (result == DialogResult.Cancel) { e.Cancel = true; return; }
-                    if (result == DialogResult.Yes)
+                    var res = MessageBox.Show("Зберегти зміни перед виходом?", "Вихід", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                    if (res == DialogResult.Cancel) { e.Cancel = true; return; }
+                    if (res == DialogResult.Yes)
                     {
-                        // Оскільки OnFormClosing синхронний, запускаємо Save і чекаємо
-                        Task.Run(async () => await currentView.SaveAsync()).Wait();
+                        // Синхронний запуск збереження (хак для OnClosing)
+                        Task.Run(async () => await current.SaveAsync()).Wait();
                     }
                 }
             }

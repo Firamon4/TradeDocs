@@ -1,8 +1,7 @@
 ﻿using System.Text.Json;
-using TradeSync.Core.Logic; // Для SecurityHelper
 using TradeSync.Core.Models;
 
-namespace TradeSync.Desktop.Logic
+namespace TradeSync.Core.Logic 
 {
     public class ConfigManager
     {
@@ -10,15 +9,16 @@ namespace TradeSync.Desktop.Logic
 
         public ConfigManager()
         {
-            // ... (код пошуку шляху залишається тим самим) ...
-            string serviceExe = "TradeSync.Service.exe";
             string configName = "appsettings.json";
             string currentDir = AppDomain.CurrentDomain.BaseDirectory;
+
+            // Логіка пошуку файлу (пріоритет: поточна папка -> папки розробки)
             string[] paths = new[] {
                 Path.Combine(currentDir, configName),
                 Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\TradeSync.Service\bin\Debug\net8.0", configName)),
                 Path.GetFullPath(Path.Combine(currentDir, @"..\..\..\..\TradeSync.Service\appsettings.json"))
             };
+
             _configPath = paths.FirstOrDefault(File.Exists) ?? Path.Combine(currentDir, configName);
         }
 
@@ -28,9 +28,14 @@ namespace TradeSync.Desktop.Logic
             try
             {
                 string json = await File.ReadAllTextAsync(_configPath);
-                var config = JsonSerializer.Deserialize<ServiceConfig>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip }) ?? new ServiceConfig();
+                var config = JsonSerializer.Deserialize<ServiceConfig>(json, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    ReadCommentHandling = JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true
+                }) ?? new ServiceConfig();
 
-                // === РОЗШИФРОВКА ===
+                // Дешифрування при читанні
                 config.ConnectionStrings.Source1C = SecurityHelper.Unprotect(config.ConnectionStrings.Source1C);
                 config.ConnectionStrings.AuxDb = SecurityHelper.Unprotect(config.ConnectionStrings.AuxDb);
 
@@ -41,14 +46,13 @@ namespace TradeSync.Desktop.Logic
 
         public async Task SaveAsync(ServiceConfig config)
         {
-            // Створюємо копію, щоб не зашифрувати дані в пам'яті (на UI вони мають лишитись читабельними)
+            // Створюємо копію для збереження, щоб зашифрувати
             var configToSave = new ServiceConfig
             {
                 Logging = config.Logging,
                 SyncSettings = config.SyncSettings,
                 ConnectionStrings = new ConnectionStrings
                 {
-                    // === ШИФРУВАННЯ ===
                     Source1C = SecurityHelper.Protect(config.ConnectionStrings.Source1C),
                     AuxDb = SecurityHelper.Protect(config.ConnectionStrings.AuxDb)
                 }

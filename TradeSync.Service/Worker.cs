@@ -58,25 +58,43 @@ namespace TradeSync.Service
             string connStringSource = _configuration.GetConnectionString("Source1C");
             string connStringAux = _configuration.GetConnectionString("AuxDb");
 
+            if (!TestConnection(connStringSource))
+            {
+                _logger.LogWarning("Неможливо підключитися до 1С. Пропускаємо цикл синхронізації.");
+                return; // Виходимо, не заходимо в цикл по таблицях
+            }
+
             foreach (var table in tables)
             {
-                _logger.LogInformation("Обробка таблиці: {Table}", table.Name1C);
+                _logger.LogInformation(">>> Початок обробки таблиці: {Table}", table.Name1C);
 
                 try
                 {
-                    // 2. Підготовка AUX бази (Створення таблиці)
                     SetupTargetTable(connStringAux, table);
-
-                    // 3. Витягування даних з 1С та Конвертація
                     var dataTable = LoadFromSource(connStringSource, table);
-
-                    // 4. Заливка в AUX
                     PushToTarget(connStringAux, table, dataTable);
+
+                    _logger.LogInformation("<<< Успішно завершено: {Table}. Записів: {Count}", table.Name1C, dataTable.Rows.Count);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Помилка при обробці таблиці {Table}", table.Name1C);
+                    _logger.LogError(ex, "КРИТИЧНА ПОМИЛКА при обробці {Table}", table.Name1C);
+                    _logger.LogWarning("!!! Сталася помилка з таблицею {Table}. Деталі див. у файлі помилок (errors-*.log)", table.Name1C);
                 }
+            }
+        }
+        private bool TestConnection(string connStr)
+        {
+            try
+            {
+                using var c = new SqlConnection(connStr);
+                c.Open();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Помилка підключення до БД");
+                return false;
             }
         }
 

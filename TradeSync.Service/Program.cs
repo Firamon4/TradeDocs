@@ -1,20 +1,34 @@
 using TradeSync.Service;
-using Serilog; // Додали Serilog
+using Serilog;
+using Serilog.Events;
 
-// Налаштування логера: писати у файл logs/log-.txt, новий файл щодня
+// 1. Конфігурація Serilog
 Log.Logger = new LoggerConfiguration()
-    .WriteTo.File(
-        path: Path.Combine(AppContext.BaseDirectory, "logs", "service-.log"),
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 7) // Зберігати за останній тиждень
+    // Файл 1: ЗАГАЛЬНИЙ (Info, Warning) - БЕЗ помилок
+    .WriteTo.Logger(l => l
+        .Filter.ByIncludingOnly(e => e.Level < LogEventLevel.Error) // Тільки те, що НЕ помилка
+        .WriteTo.File(
+            path: Path.Combine(AppContext.BaseDirectory, "logs", "service-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 7,
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}"
+        ))
+    // Файл 2: ПОМИЛКИ (Error, Fatal) - Тільки треш
+    .WriteTo.Logger(l => l
+        .Filter.ByIncludingOnly(e => e.Level >= LogEventLevel.Error) // Тільки помилки
+        .WriteTo.File(
+            path: Path.Combine(AppContext.BaseDirectory, "logs", "errors-.log"),
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 30, // Зберігаємо місяць
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"
+        ))
     .CreateLogger();
 
 try
 {
     var builder = Host.CreateApplicationBuilder(args);
 
-    // Підключаємо Serilog замість стандартного логера
-    builder.Services.AddSerilog();
+    builder.Services.AddSerilog(); // Підключаємо наш налаштований логер
 
     builder.Services.AddWindowsService(options =>
     {
@@ -28,8 +42,7 @@ try
 }
 catch (Exception ex)
 {
-    // Якщо сервіс впав при старті - запишемо це
-    Log.Fatal(ex, "Сервіс аварійно зупинився!");
+    Log.Fatal(ex, "Сервіс впав при старті (Critical Fail)!");
 }
 finally
 {

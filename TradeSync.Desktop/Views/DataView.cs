@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using System.Data.SQLite;
 using System.Text.Json;
+using TradeSync.Core.Logic;
 using TradeSync.Core.Models;
 using TradeSync.Desktop.Logic;
 
