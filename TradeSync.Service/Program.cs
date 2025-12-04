@@ -2,24 +2,24 @@ using TradeSync.Service;
 using Serilog;
 using Serilog.Events;
 
-// 1. Конфігурація Serilog
+// Налаштування: Два окремих файли
 Log.Logger = new LoggerConfiguration()
-    // Файл 1: ЗАГАЛЬНИЙ (Info, Warning) - БЕЗ помилок
+    // 1. ЗАГАЛЬНИЙ (Тільки Info/Warning, без помилок)
     .WriteTo.Logger(l => l
-        .Filter.ByIncludingOnly(e => e.Level < LogEventLevel.Error) // Тільки те, що НЕ помилка
+        .Filter.ByIncludingOnly(e => e.Level < LogEventLevel.Error)
         .WriteTo.File(
             path: Path.Combine(AppContext.BaseDirectory, "logs", "service-.log"),
             rollingInterval: RollingInterval.Day,
             retainedFileCountLimit: 7,
-            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}"
+            outputTemplate: "{Timestamp:HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}"
         ))
-    // Файл 2: ПОМИЛКИ (Error, Fatal) - Тільки треш
+    // 2. ПОМИЛКИ (Тільки Error/Fatal)
     .WriteTo.Logger(l => l
-        .Filter.ByIncludingOnly(e => e.Level >= LogEventLevel.Error) // Тільки помилки
+        .Filter.ByIncludingOnly(e => e.Level >= LogEventLevel.Error)
         .WriteTo.File(
             path: Path.Combine(AppContext.BaseDirectory, "logs", "errors-.log"),
             rollingInterval: RollingInterval.Day,
-            retainedFileCountLimit: 30, // Зберігаємо місяць
+            retainedFileCountLimit: 30,
             outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"
         ))
     .CreateLogger();
@@ -27,24 +27,11 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     var builder = Host.CreateApplicationBuilder(args);
-
-    builder.Services.AddSerilog(); // Підключаємо наш налаштований логер
-
-    builder.Services.AddWindowsService(options =>
-    {
-        options.ServiceName = "TradeSyncService";
-    });
-
+    builder.Services.AddSerilog();
+    builder.Services.AddWindowsService(o => o.ServiceName = "TradeSyncService");
     builder.Services.AddHostedService<Worker>();
-
     var host = builder.Build();
     host.Run();
 }
-catch (Exception ex)
-{
-    Log.Fatal(ex, "Сервіс впав при старті (Critical Fail)!");
-}
-finally
-{
-    Log.CloseAndFlush();
-}
+catch (Exception ex) { Log.Fatal(ex, "CRITICAL FAIL"); }
+finally { Log.CloseAndFlush(); }

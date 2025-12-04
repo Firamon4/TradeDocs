@@ -1,9 +1,9 @@
 using System.Data;
-using Microsoft.Data.SqlClient; // Використовуй NuGet пакет Microsoft.Data.SqlClient
+using Microsoft.Data.SqlClient;
 using System.Text.Json;
 using TradeSync.Core.Logic;
 using TradeSync.Core.Models;
-using Microsoft.Extensions.Configuration.UserSecrets;
+using TradeSync.Service.Logic; // <--- Додали посилання на новий клас
 
 namespace TradeSync.Service
 {
@@ -27,166 +27,124 @@ namespace TradeSync.Service
             while (!stoppingToken.IsCancellationRequested)
             {
                 _logger.LogInformation("Початок циклу синхронізації: {time}", DateTimeOffset.Now);
-
-                try
-                {
-                    RunSync();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Критична помилка синхронізації");
-                }
-
-                // Чекаємо 10 хвилин перед наступним циклом (або налаштуй як треба)
+                try { RunSync(); }
+                catch (Exception ex) { _logger.LogError(ex, "Критична помилка циклу"); }
                 await Task.Delay(TimeSpan.FromMinutes(10), stoppingToken);
             }
         }
 
         private void RunSync()
         {
-            // 1. Читаємо структуру
             var jsonPath = Path.Combine(AppContext.BaseDirectory, _configuration["SyncSettings:StructureFile"]);
-            if (!File.Exists(jsonPath))
-            {
-                _logger.LogError("Файл структури не знайдено: {path}", jsonPath);
-                return;
-            }
+            if (!File.Exists(jsonPath)) { _logger.LogError("Немає structure.json"); return; }
 
-            var jsonContent = File.ReadAllText(jsonPath);
-            var tables = JsonSerializer.Deserialize<List<TableSchema>>(jsonContent);
+            var tables = JsonSerializer.Deserialize<List<TableSchema>>(File.ReadAllText(jsonPath));
+            string connSrc = _configuration.GetConnectionString("Source1C");
+            string connAux = _configuration.GetConnectionString("AuxDb");
 
-            string connStringSource = _configuration.GetConnectionString("Source1C");
-            string connStringAux = _configuration.GetConnectionString("AuxDb");
-
-            if (!TestConnection(connStringSource))
-            {
-                _logger.LogWarning("Неможливо підключитися до 1С. Пропускаємо цикл синхронізації.");
-                return; // Виходимо, не заходимо в цикл по таблицях
-            }
+            if (!TestConnection(connSrc)) { _logger.LogWarning("1С недоступна. Пропускаємо цикл."); return; }
 
             foreach (var table in tables)
             {
-                _logger.LogInformation(">>> Початок обробки таблиці: {Table}", table.Name1C);
-
+                _logger.LogInformation(">>> Обробка: {Table}", table.Name);
                 try
                 {
-                    SetupTargetTable(connStringAux, table);
-                    var dataTable = LoadFromSource(connStringSource, table);
-                    PushToTarget(connStringAux, table, dataTable);
-
-                    _logger.LogInformation("<<< Успішно завершено: {Table}. Записів: {Count}", table.Name1C, dataTable.Rows.Count);
+                    ProcessTable(connSrc, connAux, table);
+                    _logger.LogInformation("<<< Успішно: {Table}", table.Name);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "КРИТИЧНА ПОМИЛКА при обробці {Table}", table.Name1C);
-                    _logger.LogWarning("!!! Сталася помилка з таблицею {Table}. Деталі див. у файлі помилок (errors-*.log)", table.Name1C);
-                }
-            }
-        }
-        private bool TestConnection(string connStr)
-        {
-            try
-            {
-                using var c = new SqlConnection(connStr);
-                c.Open();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Помилка підключення до БД");
-                return false;
-            }
-        }
-
-        private void SetupTargetTable(string connString, TableSchema table)
-        {
-            var createScript = _schemaBuilder.GenerateCreateScript(table);
-
-            using (var conn = new SqlConnection(connString))
-            {
-                conn.Open();
-                // Створення таблиці
-                using (var cmd = new SqlCommand(createScript, conn))
-                {
-                    cmd.ExecuteNonQuery();
-                }
-
-                // ОЧИЩЕННЯ ТАБЛИЦІ ПЕРЕД ЗАВАНТАЖЕННЯМ (Повна синхронізація)
-                // У майбутньому замінимо на MERGE/UPDATE logic
-                using (var cmd = new SqlCommand($"TRUNCATE TABLE [{table.TargetTableName}]", conn))
-                {
-                    cmd.ExecuteNonQuery();
+                    _logger.LogError(ex, "ПОМИЛКА {Table}", table.Name);
                 }
             }
         }
 
-        private DataTable LoadFromSource(string connString, TableSchema table)
+        // Новий метод, що об'єднує логіку для однієї таблиці
+        private void ProcessTable(string connSrc, string connAux, TableSchema table)
         {
-            var dt = new DataTable();
-            var query = _queryBuilder.BuildSelectQuery(table);
-
-            using (var conn = new SqlConnection(connString))
+            // 1. Відкриваємо з'єднання з 1С і готуємо Reader (Streaming)
+            // Важливо: Reader тримає з'єднання відкритим, доки ми читаємо
+            using (var connectionSource = new SqlConnection(connSrc))
             {
-                conn.Open();
-                using (var cmd = new SqlCommand(query, conn))
-                using (var reader = cmd.ExecuteReader())
+                connectionSource.Open();
+                var query = _queryBuilder.BuildSelectQuery(table);
+
+                using (var cmdSource = new SqlCommand(query, connectionSource))
                 {
-                    // Створюємо колонки в DataTable з ТЕХНІЧНИМИ іменами
-                    foreach (var field in table.Fields)
+                    cmdSource.CommandTimeout = 600; // 10 хв на старт
+
+                    // Використовуємо ExecuteReader (потік), а не Load (пам'ять)
+                    using (var reader = cmdSource.ExecuteReader())
                     {
-                        string colName = field.Value; // _IDRRef
-
-                        // Типізація залишається, щоб дані були нормальними
-                        Type colType = typeof(string);
-                        if (colName.EndsWith("RRef") || colName == "_IDRRef") colType = typeof(Guid);
-                        else if (colName == "_Marked") colType = typeof(bool);
-                        else if (field.Key.Contains("Сума") || field.Key.Contains("Кількість")) colType = typeof(decimal); // Тут підглядаємо в HumanKey для типу, але ім'я колонки лишаємо технічним
-
-                        dt.Columns.Add(colName, colType);
-                    }
-
-                    while (reader.Read())
-                    {
-                        var row = dt.NewRow();
-                        foreach (var field in table.Fields)
+                        // Огортаємо в наш конвертер
+                        using (var convertingReader = new ConvertingDataReader(reader, table))
                         {
-                            string colName = field.Value;
-                            var val = reader[colName];
+                            // 2. Відкриваємо транзакцію в Aux базі
+                            using (var connectionAux = new SqlConnection(connAux))
+                            {
+                                connectionAux.Open();
+                                using (var transaction = connectionAux.BeginTransaction())
+                                {
+                                    try
+                                    {
+                                        // А. Видаляємо стару і створюємо нову таблицю (в транзакції)
+                                        SetupTargetTable(connectionAux, transaction, table);
 
-                            // Конвертація типів
-                            if (dt.Columns[colName].DataType == typeof(Guid))
-                                row[colName] = DataHelper.ConvertToGuid(val);
-                            else if (dt.Columns[colName].DataType == typeof(bool))
-                                row[colName] = DataHelper.ConvertToBool(val);
-                            else
-                                row[colName] = val == DBNull.Value ? DBNull.Value : val;
+                                        // Б. Заливаємо дані прямо з потоку (в транзакції)
+                                        PushToTarget(connectionAux, transaction, table, convertingReader);
+
+                                        // В. Якщо все ок - комітимо
+                                        transaction.Commit();
+                                    }
+                                    catch
+                                    {
+                                        transaction.Rollback(); // Відміна змін, стара таблиця залишається живою
+                                        throw;
+                                    }
+                                }
+                            }
                         }
-                        dt.Rows.Add(row);
                     }
                 }
             }
-            return dt;
         }
 
-        private void PushToTarget(string connString, TableSchema table, DataTable dt)
+        private void SetupTargetTable(SqlConnection conn, SqlTransaction trans, TableSchema table)
         {
-            using (var conn = new SqlConnection(connString))
+            var script = _schemaBuilder.GenerateCreateScript(table);
+
+            // Видаляємо стару (якщо транзакція відкотиться, видалення скасується)
+            string drop = $"IF OBJECT_ID('dbo.[{table.SQLTable}]', 'U') IS NOT NULL DROP TABLE [dbo].[{table.SQLTable}]";
+
+            using (var cmd = new SqlCommand(drop, conn, trans)) cmd.ExecuteNonQuery();
+            using (var cmd = new SqlCommand(script, conn, trans)) cmd.ExecuteNonQuery();
+        }
+
+        private void PushToTarget(SqlConnection conn, SqlTransaction trans, TableSchema table, IDataReader reader)
+        {
+            // Передаємо транзакцію в BulkCopy
+            using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, trans))
             {
-                conn.Open();
-                using (var bulk = new SqlBulkCopy(conn))
+                bulk.BulkCopyTimeout = 3600; // 1 година
+                bulk.BatchSize = 5000;       // Пишемо пакетами по 5000 рядків (Batching)
+                bulk.DestinationTableName = $"[{table.SQLTable}]";
+                bulk.EnableStreaming = true; // Увімкнути стрімінг
+
+                foreach (var col in table.Columns)
+                    bulk.ColumnMappings.Add(col.Sql, col.Sql);
+
+                try
                 {
-                    // Ім'я таблиці в Aux базі тепер теж технічне: _Reference283
-                    bulk.DestinationTableName = $"[{table.SqlTableNameSource}]";
-
-                    foreach (DataColumn col in dt.Columns)
-                    {
-                        // Mapping: _IDRRef -> _IDRRef
-                        bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
-                    }
-
-                    bulk.WriteToServer(dt);
+                    // Пишемо прямо з Reader-а
+                    bulk.WriteToServer(reader);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"BulkCopy failed: {ex.Message}", ex);
                 }
             }
         }
+
+        private bool TestConnection(string s) { try { using var c = new SqlConnection(s); c.Open(); return true; } catch { return false; } }
     }
 }

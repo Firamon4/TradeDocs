@@ -6,282 +6,207 @@ namespace TradeSync.Desktop.Views
     public class StructureView : UserControl
     {
         private const string StructureFile = "structure.json";
-
-        // Дані
         private List<TableSchema> _tables;
-        private bool _isUpdatingUi = false; // Блокувальник подій
-        private bool _isEditMode = false;   // Режим редагування
+        private bool _isEditMode = false;
+        private bool _isUpdatingUi = false;
 
-        // UI Елементи
+        // UI
         private ListBox _lstTables;
-        private TextBox _txtName1C;
-        private TextBox _txtSqlTable;
-        private DataGridView _gridFields;
-        private Button _btnEditMode;
-        private Button _btnSave;
-        private Button _btnAdd;
-        private Button _btnDel;
+        private TextBox _txtName, _txtSql;
+        private DataGridView _grid;
+        private Button _btnEdit, _btnSave, _btnAdd, _btnDel;
 
         public StructureView()
         {
             this.Dock = DockStyle.Fill;
             this.BackColor = Color.White;
             InitializeLayout();
-            LoadDataAsync();
+            LoadData();
         }
 
         private void InitializeLayout()
         {
-            // Розподіл: 40% список, 60% деталі (щоб влазили назви)
-            var mainLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(10) };
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-            mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60F));
+            var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 350, SplitterWidth = 5, FixedPanel = FixedPanel.Panel1 };
 
-            // === ЛІВА ПАНЕЛЬ (СПИСОК) ===
-            var leftPanel = new Panel { Dock = DockStyle.Fill };
+            // === ЛІВА ПАНЕЛЬ ===
+            var left = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
+            _lstTables = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false, Font = new Font("Segoe UI", 10), HorizontalScrollbar = true };
+            _lstTables.SelectedIndexChanged += (s, e) => LoadDetails();
 
-            _lstTables = new ListBox
-            {
-                Dock = DockStyle.Fill,
-                IntegralHeight = false,
-                Font = new Font("Segoe UI", 10),
-                HorizontalScrollbar = true // <--- ВАЖЛИВО: Скрол для довгих назв
-            };
-            _lstTables.SelectedIndexChanged += OnTableSelected;
+            var leftBtns = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 40, ColumnCount = 2 };
+            leftBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F)); leftBtns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            _btnAdd = Btn("+", Color.Gainsboro, Color.Black, AddTable);
+            _btnDel = Btn("-", Color.IndianRed, Color.White, DeleteTable);
+            leftBtns.Controls.Add(_btnAdd, 0, 0); leftBtns.Controls.Add(_btnDel, 1, 0);
 
-            var btnPanelLeft = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 40, ColumnCount = 2 };
-            btnPanelLeft.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            btnPanelLeft.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-
-            _btnAdd = CreateButton("+", Color.MediumSeaGreen, Color.White, () => AddTable());
-            _btnDel = CreateButton("-", Color.IndianRed, Color.White, () => DeleteTable());
-            _btnAdd.Enabled = false; // Блокуємо, поки не увімкнуть редагування
-            _btnDel.Enabled = false;
-
-            btnPanelLeft.Controls.Add(_btnAdd, 0, 0);
-            btnPanelLeft.Controls.Add(_btnDel, 1, 0);
-
-            var btnImport = CreateButton("📂 Імпорт JSON...", Color.Orange, Color.White, () => ImportJson());
+            var btnImport = Btn("📂 Імпорт JSON", Color.Orange, Color.White, ImportJson);
             btnImport.Dock = DockStyle.Bottom;
-            btnImport.Height = 35;
 
-            leftPanel.Controls.Add(_lstTables);
-            leftPanel.Controls.Add(btnPanelLeft);
-            leftPanel.Controls.Add(btnImport);
-            leftPanel.Controls.Add(new Label { Text = "Список таблиць:", Dock = DockStyle.Top, Height = 25, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
+            left.Controls.Add(_lstTables);
+            left.Controls.Add(leftBtns);
+            left.Controls.Add(btnImport);
+            left.Controls.Add(new Label { Text = "Таблиці:", Dock = DockStyle.Top, Height = 25, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
 
-            // === ПРАВА ПАНЕЛЬ (ДЕТАЛІ) ===
-            var rightLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4 };
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F)); // Header (Edit button)
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80F)); // Meta Inputs
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F)); // Grid
-            rightLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50F)); // Save Button
+            // === ПРАВА ПАНЕЛЬ ===
+            var right = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
 
-            // 1. Верхній рядок: Кнопка "Редагувати"
-            var headerPanel = new Panel { Dock = DockStyle.Fill };
-            _btnEditMode = CreateButton("🔒 Режим перегляду (Тільки читання)", Color.LightYellow, Color.Black, () => ToggleEditMode());
-            _btnEditMode.Dock = DockStyle.Right;
-            _btnEditMode.Width = 250;
-            headerPanel.Controls.Add(_btnEditMode);
-            headerPanel.Controls.Add(new Label { Text = "Деталі:", Dock = DockStyle.Left, AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft });
+            var header = new Panel { Dock = DockStyle.Top, Height = 45 };
+            _btnEdit = Btn("🔒 Режим перегляду", Color.LightYellow, Color.Black, ToggleEdit);
+            _btnEdit.Dock = DockStyle.Right; _btnEdit.Width = 200;
+            header.Controls.Add(_btnEdit);
+            header.Controls.Add(new Label { Text = "Налаштування:", Dock = DockStyle.Left, AutoSize = true, Font = new Font("Segoe UI", 12, FontStyle.Bold) });
 
-            // 2. Поля введення (Meta)
-            var metaLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
-            metaLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
-            metaLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            var meta = new TableLayoutPanel { Dock = DockStyle.Top, Height = 60, ColumnCount = 2 };
+            meta.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F)); meta.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
 
-            _txtName1C = new TextBox { Dock = DockStyle.Top, Font = new Font("Consolas", 10), ReadOnly = true, BackColor = Color.WhiteSmoke };
-            _txtName1C.TextChanged += (s, e) => UpdateModel();
+            _txtName = new TextBox { Dock = DockStyle.Top, ReadOnly = true };
+            _txtName.TextChanged += (s, e) => UpdateModelHeader(); // Оновлення назви в реальному часі
 
-            _txtSqlTable = new TextBox { Dock = DockStyle.Top, Font = new Font("Consolas", 10), ReadOnly = true, BackColor = Color.WhiteSmoke };
-            _txtSqlTable.TextChanged += (s, e) => UpdateModel();
+            _txtSql = new TextBox { Dock = DockStyle.Top, ReadOnly = true };
+            _txtSql.TextChanged += (s, e) => UpdateModelHeader();
 
-            metaLayout.Controls.Add(new Label { Text = "Назва 1C (Name):", AutoSize = true }, 0, 0);
-            metaLayout.Controls.Add(new Label { Text = "SQL Таблиця (SQLTable):", AutoSize = true }, 1, 0);
-            metaLayout.Controls.Add(_txtName1C, 0, 1);
-            metaLayout.Controls.Add(_txtSqlTable, 1, 1);
+            meta.Controls.Add(new Label { Text = "Назва 1С:", AutoSize = true }, 0, 0);
+            meta.Controls.Add(new Label { Text = "SQL Table:", AutoSize = true }, 1, 0);
+            meta.Controls.Add(_txtName, 0, 1);
+            meta.Controls.Add(_txtSql, 1, 1);
 
-            // 3. Грід
-            _gridFields = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                BackgroundColor = Color.WhiteSmoke, // Сірий, поки ReadOnly
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                RowHeadersVisible = false,
-                ReadOnly = true, // Заблоковано за замовчуванням
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false
-            };
-            _gridFields.Columns.Add("Human", "Локальне ім'я (SQLite)");
-            _gridFields.Columns.Add("Sql", "Поле в SQL 1C");
+            // Грід з типами
+            _grid = new DataGridView { Dock = DockStyle.Fill, BackgroundColor = Color.WhiteSmoke, ReadOnly = true, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, AllowUserToAddRows = false };
 
-            // 4. Кнопка Save
-            _btnSave = CreateButton("💾 Зберегти зміни", Color.SteelBlue, Color.White, () => SaveJson());
-            _btnSave.Enabled = false; // Активна тільки в режимі редагування
+            _grid.Columns.Add("Local", "Локальне ім'я");
+            _grid.Columns.Add("Sql", "Поле в SQL");
 
-            rightLayout.Controls.Add(headerPanel, 0, 0);
-            rightLayout.Controls.Add(metaLayout, 0, 1);
-            rightLayout.Controls.Add(_gridFields, 0, 2);
-            rightLayout.Controls.Add(_btnSave, 0, 3);
+            // Колонка з типами
+            var typeCol = new DataGridViewComboBoxColumn();
+            typeCol.HeaderText = "Тип даних";
+            typeCol.Name = "Type";
+            typeCol.Items.AddRange("String", "Guid", "Boolean", "Decimal", "Int", "Binary", "DateTime");
+            _grid.Columns.Add(typeCol);
 
-            mainLayout.Controls.Add(leftPanel, 0, 0);
-            mainLayout.Controls.Add(rightLayout, 1, 0);
-            this.Controls.Add(mainLayout);
+            _btnSave = Btn("💾 Зберегти структуру", Color.SteelBlue, Color.White, SaveJson);
+            _btnSave.Dock = DockStyle.Bottom; _btnSave.Enabled = false;
+
+            right.Controls.Add(_grid);
+            right.Controls.Add(new Label { Text = "Маппінг:", Dock = DockStyle.Top, Height = 25 });
+            right.Controls.Add(meta);
+            right.Controls.Add(header);
+            right.Controls.Add(_btnSave);
+
+            split.Panel1.Controls.Add(left);
+            split.Panel2.Controls.Add(right);
+            this.Controls.Add(split);
         }
 
-        // --- ЛОГІКА РЕЖИМІВ ---
-
-        private void ToggleEditMode()
-        {
-            _isEditMode = !_isEditMode;
-
-            // Змінюємо вигляд кнопки режиму
-            if (_isEditMode)
-            {
-                _btnEditMode.Text = "🔓 РЕЖИМ РЕДАГУВАННЯ (АКТИВНИЙ)";
-                _btnEditMode.BackColor = Color.Orange;
-                _gridFields.BackgroundColor = Color.White;
-            }
-            else
-            {
-                _btnEditMode.Text = "🔒 Режим перегляду (Тільки читання)";
-                _btnEditMode.BackColor = Color.LightYellow;
-                _gridFields.BackgroundColor = Color.WhiteSmoke;
-            }
-
-            // Розблокуємо/Блокуємо контроли
-            _txtName1C.ReadOnly = !_isEditMode;
-            _txtSqlTable.ReadOnly = !_isEditMode;
-
-            _txtName1C.BackColor = _isEditMode ? Color.White : Color.WhiteSmoke;
-            _txtSqlTable.BackColor = _isEditMode ? Color.White : Color.WhiteSmoke;
-
-            _gridFields.ReadOnly = !_isEditMode;
-            _gridFields.AllowUserToAddRows = _isEditMode;
-            _gridFields.AllowUserToDeleteRows = _isEditMode;
-
-            _btnAdd.Enabled = _isEditMode;
-            _btnDel.Enabled = _isEditMode;
-            _btnSave.Enabled = _isEditMode;
-        }
-
-        // --- ЛОГІКА ДАНИХ ---
-
-        private async void LoadDataAsync()
-        {
-            if (!File.Exists(StructureFile)) return;
-            try
-            {
-                var json = await File.ReadAllTextAsync(StructureFile);
-                _tables = JsonSerializer.Deserialize<List<TableSchema>>(json) ?? new List<TableSchema>();
-                RefreshList();
-            }
-            catch { _tables = new List<TableSchema>(); }
-        }
-
-        private void RefreshList()
-        {
-            _lstTables.Items.Clear();
-            foreach (var t in _tables) _lstTables.Items.Add(t.Name1C);
-        }
-
-        private void OnTableSelected(object sender, EventArgs e)
+        private void LoadDetails()
         {
             int idx = _lstTables.SelectedIndex;
             if (idx < 0 || idx >= _tables.Count) return;
-
             var t = _tables[idx];
 
-            // Вмикаємо прапорець, щоб TextChanged не спрацював і не подумав, що ми редагуємо
             _isUpdatingUi = true;
+            _txtName.Text = t.Name;
+            _txtSql.Text = t.SQLTable;
 
-            _txtName1C.Text = t.Name1C;
-            _txtSqlTable.Text = t.SqlTableNameSource; // Це значення з JSON (наприклад "_Reference283")
-
-            _gridFields.Rows.Clear();
-            foreach (var f in t.Fields) _gridFields.Rows.Add(f.Key, f.Value);
-
+            _grid.Rows.Clear();
+            foreach (var c in t.Columns)
+            {
+                _grid.Rows.Add(c.Local, c.Sql, c.Type);
+            }
             _isUpdatingUi = false;
         }
 
-        private void UpdateModel()
+        private void UpdateModelHeader()
         {
-            // Якщо ми просто завантажуємо дані в бокси - не оновлюємо модель
             if (_isUpdatingUi) return;
-
             int idx = _lstTables.SelectedIndex;
             if (idx >= 0)
             {
-                _tables[idx].Name1C = _txtName1C.Text;
-                _tables[idx].SqlTableNameSource = _txtSqlTable.Text;
-            }
-        }
-
-        // --- ОПЕРАЦІЇ ---
-
-        private void ImportJson()
-        {
-            using (var ofd = new OpenFileDialog { Filter = "JSON|*.json" })
-            {
-                if (ofd.ShowDialog() == DialogResult.OK)
-                {
-                    try
-                    {
-                        var json = File.ReadAllText(ofd.FileName);
-                        _tables = JsonSerializer.Deserialize<List<TableSchema>>(json);
-                        RefreshList();
-                        MessageBox.Show("Структуру імпортовано! Не забудьте перевірити і зберегти.");
-                    }
-                    catch (Exception ex) { MessageBox.Show("Помилка: " + ex.Message); }
-                }
-            }
-        }
-
-        private void AddTable()
-        {
-            _tables.Add(new TableSchema { Name1C = "NewTable", SqlTableNameSource = "_Tbl", Fields = new Dictionary<string, string>() });
-            RefreshList();
-            _lstTables.SelectedIndex = _tables.Count - 1;
-        }
-
-        private void DeleteTable()
-        {
-            int idx = _lstTables.SelectedIndex;
-            if (idx >= 0 && MessageBox.Show("Видалити таблицю?", "Підтвердження", MessageBoxButtons.YesNo) == DialogResult.Yes)
-            {
-                _tables.RemoveAt(idx);
-                RefreshList();
-                // Очистка
-                _isUpdatingUi = true;
-                _txtName1C.Clear(); _txtSqlTable.Clear(); _gridFields.Rows.Clear();
-                _isUpdatingUi = false;
+                _tables[idx].Name = _txtName.Text;
+                _tables[idx].SQLTable = _txtSql.Text;
             }
         }
 
         private void SaveJson()
         {
-            // Перед збереженням забираємо дані з Гріда в модель
+            // Зберігаємо Грід в модель перед записом
             int idx = _lstTables.SelectedIndex;
             if (idx >= 0)
             {
-                var dict = new Dictionary<string, string>();
-                foreach (DataGridViewRow r in _gridFields.Rows)
+                var newCols = new List<ColumnInfo>();
+                foreach (DataGridViewRow r in _grid.Rows)
+                {
                     if (!r.IsNewRow && r.Cells[0].Value != null)
-                        dict[r.Cells[0].Value.ToString()] = r.Cells[1].Value?.ToString() ?? "";
-                _tables[idx].Fields = dict;
+                    {
+                        newCols.Add(new ColumnInfo
+                        {
+                            Local = r.Cells[0].Value?.ToString(),
+                            Sql = r.Cells[1].Value?.ToString(),
+                            Type = r.Cells[2].Value?.ToString() ?? "String"
+                        });
+                    }
+                }
+                _tables[idx].Columns = newCols;
             }
 
             var opts = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(StructureFile, JsonSerializer.Serialize(_tables, opts));
-            MessageBox.Show("Файл structure.json успішно збережено!");
+            MessageBox.Show("Збережено!");
         }
 
-        private Button CreateButton(string t, Color bg, Color fg, Action act)
+        private void ToggleEdit()
         {
-            var b = new Button { Text = t, Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, BackColor = bg, ForeColor = fg, Cursor = Cursors.Hand, Margin = new Padding(2) };
-            b.FlatAppearance.BorderSize = 0;
-            b.Click += (s, e) => act();
-            return b;
+            _isEditMode = !_isEditMode;
+            _btnEdit.Text = _isEditMode ? "🔓 РЕДАГУВАННЯ" : "🔒 Режим перегляду";
+            _btnEdit.BackColor = _isEditMode ? Color.Orange : Color.LightYellow;
+
+            _txtName.ReadOnly = !_isEditMode;
+            _txtSql.ReadOnly = !_isEditMode;
+            _grid.ReadOnly = !_isEditMode;
+            _grid.BackgroundColor = _isEditMode ? Color.White : Color.WhiteSmoke;
+            _grid.AllowUserToAddRows = _isEditMode;
+            _grid.AllowUserToDeleteRows = _isEditMode;
+            _btnSave.Enabled = _isEditMode;
+            _btnAdd.Enabled = _isEditMode;
+            _btnDel.Enabled = _isEditMode;
         }
+
+        // --- Helpers ---
+        private async void LoadData()
+        {
+            if (File.Exists(StructureFile))
+            {
+                var j = await File.ReadAllTextAsync(StructureFile);
+                _tables = JsonSerializer.Deserialize<List<TableSchema>>(j) ?? new();
+                RefreshList();
+            }
+            else _tables = new();
+        }
+        private void RefreshList() { _lstTables.Items.Clear(); foreach (var t in _tables) _lstTables.Items.Add(t.Name); }
+
+        private void AddTable()
+        {
+            _tables.Add(new TableSchema { Name = "New", SQLTable = "_Tbl", Columns = new() });
+            RefreshList(); _lstTables.SelectedIndex = _tables.Count - 1;
+        }
+
+        private void DeleteTable()
+        {
+            int i = _lstTables.SelectedIndex;
+            if (i >= 0 && MessageBox.Show("Del?", "Confirm", MessageBoxButtons.YesNo) == DialogResult.Yes)
+            { _tables.RemoveAt(i); RefreshList(); }
+        }
+
+        private void ImportJson()
+        {
+            using var o = new OpenFileDialog();
+            if (o.ShowDialog() == DialogResult.OK)
+            {
+                var j = File.ReadAllText(o.FileName);
+                _tables = JsonSerializer.Deserialize<List<TableSchema>>(j);
+                RefreshList();
+            }
+        }
+
+        private Button Btn(string t, Color b, Color f, Action a) { var btn = new Button { Text = t, BackColor = b, ForeColor = f, FlatStyle = FlatStyle.Flat, Height = 35, Margin = new Padding(2) }; btn.Click += (s, e) => a(); return btn; }
     }
 }

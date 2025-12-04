@@ -8,69 +8,37 @@ namespace TradeSync.Core.Logic
         public string GenerateCreateScript(TableSchema table)
         {
             var sb = new StringBuilder();
-
-            // Використовуємо технічне ім'я таблиці: _Reference283
-            sb.AppendLine($"IF OBJECT_ID('dbo.[{table.SqlTableNameSource}]', 'U') IS NULL");
+            sb.AppendLine($"IF OBJECT_ID('dbo.[{table.SQLTable}]', 'U') IS NULL");
             sb.AppendLine("BEGIN");
-            sb.AppendLine($"CREATE TABLE [dbo].[{table.SqlTableNameSource}] (");
-
-            // Службові поля для синхронізації
+            sb.AppendLine($"CREATE TABLE [dbo].[{table.SQLTable}] (");
             sb.AppendLine("    [_SyncId] BIGINT IDENTITY(1,1) PRIMARY KEY,");
-            sb.AppendLine("    [_LastModified] DATETIME DEFAULT GETDATE(),"); // Корисно додати дату вставки
+            sb.AppendLine("    [_LastModified] DATETIME DEFAULT GETDATE(),");
 
-            foreach (var field in table.Fields)
+            foreach (var col in table.Columns)
             {
-                // field.Value — це "_IDRRef", "_Fld3844"
-                string sourceColName = field.Value;
-
-                // Передаємо також humanKey, щоб краще вгадати тип (наприклад для сум)
-                string sqlType = GetSqlTypeBySourceColumn(sourceColName, field.Key);
-
-                sb.AppendLine($"    [{sourceColName}] {sqlType},");
+                string sqlType = GetSqlType(col.Type, col.Sql);
+                sb.AppendLine($"    [{col.Sql}] {sqlType},");
             }
 
-            sb.Length -= 3; // Видаляємо останню кому і перенос
+            sb.Length -= 3;
             sb.AppendLine();
             sb.AppendLine(");");
             sb.AppendLine("END");
-
             return sb.ToString();
         }
 
-        private string GetSqlTypeBySourceColumn(string sourceName, string humanName)
+        private string GetSqlType(string jsonType, string fieldName)
         {
-            // 1. Посилання (GUID)
-            // _IDRRef або поля, що закінчуються на RRef (посилання на інші таблиці)
-            if (sourceName.EndsWith("RRef", StringComparison.OrdinalIgnoreCase))
-                return "UNIQUEIDENTIFIER";
-
-            // 2. Версія (Timestamp 1C)
-            if (sourceName.Equals("_Version", StringComparison.OrdinalIgnoreCase))
-                return "VARBINARY(8)";
-
-            // 3. Булево
-            if (sourceName.Equals("_Marked", StringComparison.OrdinalIgnoreCase) ||
-                sourceName.Equals("_Folder", StringComparison.OrdinalIgnoreCase))
-                return "BIT";
-
-            // 4. Складені типи (TYPE) - зазвичай це бінарні дані або ID типу
-            if (sourceName.EndsWith("_TYPE", StringComparison.OrdinalIgnoreCase))
-                return "VARBINARY(MAX)";
-
-            // 5. Числа (Спроба вгадати по людській назві, бо 1С імена полів _Fld... нічого не кажуть)
-            if (humanName.Contains("Сумма") || humanName.Contains("Цена") ||
-                humanName.Contains("Количество") || humanName.Contains("Вес") ||
-                humanName.Contains("Коефіцієнт") || humanName.Contains("Объем"))
+            return jsonType switch
             {
-                return "DECIMAL(19, 4)";
-            }
-
-            // 6. Спеціальні поля 1С (LineNo)
-            if (sourceName.StartsWith("_LineNo"))
-                return "INT";
-
-            // 7. Рядки та все інше
-            return "NVARCHAR(MAX)";
+                "Guid" => "UNIQUEIDENTIFIER",
+                "Boolean" => "BIT",
+                "Decimal" => "DECIMAL(19, 4)",
+                "Int" => "INT",
+                "DateTime" => "DATETIME",
+                "Binary" => fieldName == "_Version" ? "VARBINARY(8)" : "VARBINARY(MAX)",
+                _ => "NVARCHAR(MAX)" // String default
+            };
         }
     }
 }

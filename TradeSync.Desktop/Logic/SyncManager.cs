@@ -43,7 +43,7 @@ namespace TradeSync.Desktop.Logic
                 {
                     currentTable++;
                     OnProgress?.Invoke(currentTable, totalTables);
-                    OnLog?.Invoke($"Синхронізація таблиці: {table.Name1C}...");
+                    OnLog?.Invoke($"Синхронізація таблиці: {table.Name}...");
 
                     // 2. Створюємо таблицю в SQLite (якщо немає)
                     var createSql = _sqliteBuilder.GenerateCreateScript(table);
@@ -53,7 +53,7 @@ namespace TradeSync.Desktop.Logic
                     }
 
                     // 3. Очищаємо локальну таблицю (Повна синхронізація)
-                    string localTableName = _sqliteBuilder.GetLocalTableName(table.Name1C);
+                    string localTableName = _sqliteBuilder.GetLocalTableName(table.Name);
                     using (var cmd = new SQLiteCommand($"DELETE FROM [{localTableName}]", sqliteConn))
                     {
                         cmd.ExecuteNonQuery();
@@ -68,9 +68,9 @@ namespace TradeSync.Desktop.Logic
 
         private async Task PullAndSaveData(TableSchema table, SQLiteConnection sqliteConn, string localTableName)
         {
-            // Формуємо SELECT до MSSQL (Технічні імена)
-            var selectColumns = string.Join(", ", table.Fields.Values); // _IDRRef, _Fld3844
-            var query = $"SELECT {selectColumns} FROM [{table.SqlTableNameSource}]";
+            // SELECT _Fld1, _Fld2 FROM _Reference...
+            var selectColumns = string.Join(", ", table.Columns.Select(c => c.Sql));
+            var query = $"SELECT {selectColumns} FROM [{table.SQLTable}]";
 
             using (var mssqlConn = new SqlConnection(_auxConnectionString))
             {
@@ -78,20 +78,15 @@ namespace TradeSync.Desktop.Logic
                 using (var cmd = new SqlCommand(query, mssqlConn))
                 using (var reader = await cmd.ExecuteReaderAsync())
                 {
-                    // Підготовка INSERT транзакції для SQLite (для швидкості)
                     using (var transaction = sqliteConn.BeginTransaction())
                     {
-                        // Формуємо INSERT (Людські імена)
-                        // INSERT INTO Ref_Nom (Ref, Weight) VALUES (@p0, @p1)
-                        var humanCols = string.Join(", ", table.Fields.Keys.Select(k => $"[{k}]"));
-                        var paramNames = string.Join(", ", table.Fields.Keys.Select((k, i) => $"@p{i}"));
-
+                        var humanCols = string.Join(", ", table.Columns.Select(c => $"[{c.Local}]"));
+                        var paramNames = string.Join(", ", table.Columns.Select((c, i) => $"@p{i}"));
                         var insertSql = $"INSERT INTO [{localTableName}] ({humanCols}) VALUES ({paramNames})";
                         var insertCmd = new SQLiteCommand(insertSql, sqliteConn);
 
-                        // Додаємо параметри заглушки
                         var paramsList = new List<SQLiteParameter>();
-                        for (int i = 0; i < table.Fields.Count; i++)
+                        for (int i = 0; i < table.Columns.Count; i++)
                         {
                             var p = new SQLiteParameter($"@p{i}");
                             insertCmd.Parameters.Add(p);
@@ -101,22 +96,20 @@ namespace TradeSync.Desktop.Logic
                         while (await reader.ReadAsync())
                         {
                             int idx = 0;
-                            foreach (var field in table.Fields)
+                            foreach (var col in table.Columns)
                             {
-                                // Читаємо з MSSQL по технічному імені (Value)
-                                var val = reader[field.Value];
+                                var val = reader[col.Sql];
 
-                                // Конвертуємо GUID -> String для SQLite
-                                if (val is Guid g) val = g.ToString();
-                                if (val is DBNull) val = DBNull.Value;
+                                // Конвертація для SQLite
+                                if (val == DBNull.Value) paramsList[idx].Value = DBNull.Value;
+                                else if (val is Guid g) paramsList[idx].Value = g.ToString();
+                                else if (val is byte[] b) paramsList[idx].Value = Convert.ToBase64String(b); // Binary як текст
+                                else paramsList[idx].Value = val;
 
-                                // Записуємо в параметр
-                                paramsList[idx].Value = val;
                                 idx++;
                             }
                             insertCmd.ExecuteNonQuery();
                         }
-
                         transaction.Commit();
                     }
                 }

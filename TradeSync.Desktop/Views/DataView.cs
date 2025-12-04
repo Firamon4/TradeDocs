@@ -127,7 +127,7 @@ namespace TradeSync.Desktop.Views
                 var json = await File.ReadAllTextAsync(_config.SyncSettings.StructureFile);
                 var tables = JsonSerializer.Deserialize<List<TableSchema>>(json);
                 _cmbTables.Items.Clear();
-                if (tables != null) foreach (var t in tables) _cmbTables.Items.Add(t.Name1C);
+                if (tables != null) foreach (var t in tables) _cmbTables.Items.Add(t.Name);
             }
             catch (Exception ex) { Log("Помилка JSON: " + ex.Message); }
         }

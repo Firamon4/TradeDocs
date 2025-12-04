@@ -7,21 +7,13 @@ namespace TradeSync.Core.Logic
     {
         public string BuildSelectQuery(TableSchema table)
         {
-            var sb = new StringBuilder();
-            sb.Append("SELECT ");
-
-            foreach (var field in table.Fields)
+            var sb = new StringBuilder("SELECT ");
+            foreach (var col in table.Columns)
             {
-                // Просто перераховуємо: _IDRRef, _Fld3844
-                sb.Append($"{field.Value}, ");
+                sb.Append($"{col.Sql}, ");
             }
-
             sb.Length -= 2;
-            sb.Append($" FROM {table.SqlTableNameSource}");
-
-            // Тут можна додати (NOLOCK), щоб не блокувати 1С
-            sb.Append(" WITH (NOLOCK)");
-
+            sb.Append($" FROM {table.SQLTable} WITH (NOLOCK)");
             return sb.ToString();
         }
     }

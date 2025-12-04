@@ -3,21 +3,18 @@ using System.Text.Json.Serialization;
 
 namespace TradeSync.Core.Models
 {
-    // Головний клас опису таблиці
     public class TableSchema
     {
-        [JsonPropertyName("Name")]
-        public string Name1C { get; set; } // Напр: "Справочник.Номенклатура"
+        public string Name { get; set; }      // Назва 1С
+        public string SQLTable { get; set; }  // Технічна назва
 
-        [JsonPropertyName("SQLTable")]
-        public string SqlTableNameSource { get; set; } // Напр: "_Reference283"
+        public List<ColumnInfo> Columns { get; set; } = new();
+    }
 
-        [JsonPropertyName("Fields")]
-        public Dictionary<string, string> Fields { get; set; } // Key="Ref", Value="_IDRRef"
-
-        // Властивість для генерації імені таблиці в допоміжній базі
-        // Перетворює "Справочник.Номенклатура" -> "Ref_Nomenclature" або просто трансліт,
-        // але для простоти поки візьмемо очищену назву
-        public string TargetTableName => Name1C.Replace(".", "_").Replace(" ", "");
+    public class ColumnInfo
+    {
+        public string Local { get; set; }   // Human name (SQLite)
+        public string Sql { get; set; }     // SQL name (MSSQL)
+        public string Type { get; set; }    // Тип: Guid, String, Boolean, Decimal, Binary, DateTime, Int
     }
 }
